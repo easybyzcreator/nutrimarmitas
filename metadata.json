@@ -1,0 +1,6 @@
+{
+  "name": "NutriMarmitas",
+  "description": "Sistema de Cardápio Imersivo NutriMarmitas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
