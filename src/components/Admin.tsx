@@ -723,7 +723,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
       const fetched = snapshot.docs.map(doc => {
         const data = doc.data() as Product;
         const matchingInitial = initialProducts.find(ip => ip.title.trim().toLowerCase() === data.title?.trim().toLowerCase() || ip.id === doc.id);
-        const image = data.image || matchingInitial?.image || '';
+        const image = data.image !== undefined ? data.image : (matchingInitial?.image || '');
         return { id: doc.id, ...data, image } as Product;
       });
       if (fetched.length > 0) {
@@ -6996,7 +6996,10 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                             type="file" 
                             id="product-image"
                             accept="image/*"
-                            onChange={e => handleFileChange(e, (b64) => setNewProduct({...newProduct, image: b64}))}
+                            onChange={e => {
+                              handleFileChange(e, (b64) => setNewProduct(prev => ({ ...prev, image: b64 })));
+                              e.target.value = '';
+                            }}
                             className="hidden"
                           />
                           <label 
@@ -7014,9 +7017,9 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                               Ou cole/edite o Link direto da Imagem (URL https://...):
                             </label>
                             <input
-                              type="url"
+                              type="text"
                               value={newProduct.image || ""}
-                              onChange={(e) => setNewProduct({ ...newProduct, image: e.target.value })}
+                              onChange={(e) => setNewProduct(prev => ({ ...prev, image: e.target.value }))}
                               placeholder="https://i.ibb.co/... ou link da imagem"
                               className="w-full text-xs px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none bg-white text-black"
                             />

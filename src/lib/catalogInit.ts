@@ -38,18 +38,6 @@ export async function ensureDefaultCatalogSeeded() {
       }
     }
 
-    // Restore dishes to their exact original photos
-    for (const d of prodSnap.docs) {
-      const data = d.data();
-      const title = (data.title || '').toLowerCase();
-      const img = typeof data.image === 'string' ? data.image : '';
-      if (title.includes('marmita mexicana') || img.includes('Marmita-mexicana') || img.includes('ycWKTw1V') || img.includes('photo-1543339308')) {
-        await setDoc(doc(db, 'produtos', d.id), { image: '/assets/marmita-mexicana-original.png' }, { merge: true });
-      } else if (title.includes('escondidinho de abóbora') || title.includes('escondidinho de abobora') || img.includes('Escondidinho-de-ab') || img.includes('39QF7wsX') || img.includes('photo-1540420773')) {
-        await setDoc(doc(db, 'produtos', d.id), { image: '/assets/escondidinho-abobora-original.png' }, { merge: true });
-      }
-    }
-
     // Mark setup as completed
     await setDoc(setupDocRef, {
       seeded: true,

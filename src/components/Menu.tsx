@@ -4,13 +4,7 @@ import { collection, onSnapshot, addDoc, serverTimestamp, doc, query, orderBy, u
 import { Product, Order, Settings, Category, CartItem, Side, ProductSize, ImageGallery } from '../types';
 
 export function getSafeProductImage(imgUrl?: string): string {
-  if (!imgUrl) return 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80';
-  if (imgUrl.includes('ycWKTw1V') || imgUrl.includes('Marmita-mexicana') || imgUrl.includes('photo-1543339308') || imgUrl.includes('marmita-mexicana')) {
-    return '/assets/marmita-mexicana-original.png';
-  }
-  if (imgUrl.includes('39QF7wsX') || imgUrl.includes('Escondidinho-de-ab') || imgUrl.includes('photo-1540420773') || imgUrl.includes('escondidinho-abobora')) {
-    return '/assets/escondidinho-abobora-original.png';
-  }
+  if (!imgUrl || imgUrl.trim() === '') return 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80';
   return imgUrl;
 }
 import { Plus, Minus, ShoppingBag, X, MessageCircle, MessageSquare, Check, Calendar, Building2, User, Phone, MapPin, RefreshCw, ChevronDown, Snowflake, Flame, Utensils, Apple, Sparkles, Info, AlertCircle, CheckCircle2, Clock, Ban, HelpCircle, Leaf, Search, ArrowLeft, ExternalLink } from 'lucide-react';
@@ -512,7 +506,7 @@ export default function Menu({ settings: initialSettings }: { settings: Settings
       const fetchedProducts = snapshot.docs.map(doc => {
         const data = doc.data() as Product;
         const matchingInitial = initialProducts.find(ip => ip.title.trim().toLowerCase() === data.title?.trim().toLowerCase() || ip.id === doc.id);
-        const image = data.image || matchingInitial?.image || '';
+        const image = data.image !== undefined ? data.image : (matchingInitial?.image || '');
         return { id: doc.id, ...data, image } as Product;
       });
       console.log('Menu: Produtos carregados:', fetchedProducts.length);
