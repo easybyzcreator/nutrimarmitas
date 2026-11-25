@@ -12,6 +12,9 @@ interface BRDatePickerProps {
   maxDate?: Date;
   disablePast?: boolean;
   id?: string;
+  compact?: boolean;
+  wrapperClassName?: string;
+  inputClassName?: string;
 }
 
 const MONTH_NAMES_PT = [
@@ -30,7 +33,10 @@ export default function BRDatePicker({
   minDate,
   maxDate,
   disablePast = false,
-  id = 'br-datepicker'
+  id = 'br-datepicker',
+  compact = false,
+  wrapperClassName,
+  inputClassName
 }: BRDatePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -224,11 +230,12 @@ export default function BRDatePicker({
   };
 
   return (
-    <div ref={containerRef} className="relative w-full" id={id}>
+    <div ref={containerRef} className={cn("relative", compact ? "w-auto" : "w-full", wrapperClassName)} id={id}>
       <div 
         onClick={() => setIsOpen(true)}
         className={cn(
-          "w-full flex items-center justify-between p-3 rounded-xl border border-gray-300 bg-white transition-all cursor-pointer focus-within:ring-2 focus-within:border-black",
+          "flex items-center justify-between border border-gray-300 bg-white transition-all cursor-pointer focus-within:ring-2 focus-within:border-black",
+          compact ? "px-2.5 py-1.5 rounded-lg" : "w-full p-3 rounded-xl",
           className
         )}
       >
@@ -241,11 +248,15 @@ export default function BRDatePicker({
             e.stopPropagation();
             setIsOpen(true);
           }}
-          className="w-full bg-transparent outline-none text-black font-semibold placeholder:text-gray-400 text-sm"
+          className={cn(
+            "bg-transparent outline-none text-black font-semibold placeholder:text-gray-400",
+            compact ? "w-24 text-xs font-bold" : "w-full text-sm",
+            inputClassName
+          )}
         />
 
-        <div className="flex items-center gap-1 pl-2 text-gray-500">
-          {displayValue && (
+        <div className={cn("flex items-center gap-0.5 text-gray-500", compact ? "pl-1" : "pl-2")}>
+          {displayValue && !compact && (
             <button
               type="button"
               onClick={(e) => {
@@ -264,17 +275,17 @@ export default function BRDatePicker({
               e.stopPropagation();
               setIsOpen(!isOpen);
             }}
-            className="p-1 text-gray-700 hover:text-black transition-colors"
+            className={cn("text-gray-700 hover:text-black transition-colors", compact ? "p-0.5" : "p-1")}
             title="Abrir calendário"
           >
-            <CalendarIcon size={18} />
+            <CalendarIcon size={compact ? 14 : 18} />
           </button>
         </div>
       </div>
 
       {/* Calendar Popover */}
       {isOpen && (
-        <div className="absolute z-50 mt-2 left-0 right-0 sm:right-auto sm:w-80 bg-white rounded-2xl shadow-2xl border border-gray-200 p-4 animate-in fade-in zoom-in-95 duration-150">
+        <div className="absolute z-50 mt-2 left-0 sm:w-80 w-72 bg-white rounded-2xl shadow-2xl border border-gray-200 p-4 animate-in fade-in zoom-in-95 duration-150">
           {/* Header */}
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-gray-100">
             <div className="font-bold text-sm text-gray-900 font-sans">

@@ -14,10 +14,10 @@ import {
   DollarSign, Coins, ChevronDown, ChevronUp, Users, Download, Truck, Search, Info, Table,
   ChevronLeft, ChevronRight, Clock, LayoutGrid, CalendarDays, Check, ShoppingBag, User, Mail, MapPin, FileText,
   ExternalLink, Utensils, RefreshCw, HelpCircle, Leaf, Code, ToggleLeft, ToggleRight,
-  AlertTriangle, ClipboardList, Zap
+  AlertTriangle, ClipboardList, Zap, CreditCard
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn, cleanFirestoreData } from '../lib/utils';
+import { cn, cleanFirestoreData, sanitizeSafePaymentUrl, parseFlexibleDate, isoToBR, formatCpfCnpj } from '../lib/utils';
 import { toast } from 'sonner';
 import Footer from './Footer';
 import BRDatePicker from './BRDatePicker';
@@ -257,10 +257,16 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
   
   // Finance States
   const [variableCosts, setVariableCosts] = useState<VariableCost[]>([]);
-  const [newVarCost, setNewVarCost] = useState<Partial<VariableCost>>({ description: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+  const [newVarCost, setNewVarCost] = useState<Partial<VariableCost>>({
+    description: '',
+    amount: 0,
+    date: isoToBR(new Date().toISOString().split('T')[0])
+  });
   const [varCostAmountInput, setVarCostAmountInput] = useState('');
   const [isEditingVarCost, setIsEditingVarCost] = useState<VariableCost | null>(null);
   const [isProportionalFixed, setIsProportionalFixed] = useState<boolean>(true);
+  const [showRevenueModal, setShowRevenueModal] = useState<boolean>(false);
+  const [isSyncingOrderPayment, setIsSyncingOrderPayment] = useState<boolean>(false);
 
   // EGN Cash Flow Simulation states
   const [financeSubTab, setFinanceSubTab] = useState<'real' | 'simulation'>('real');
@@ -313,16 +319,16 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
   const [newYearLabel, setNewYearLabel] = useState('');
   const [viewingSavedYear, setViewingSavedYear] = useState<{ id: string; label: string; data: any; date: string } | null>(null);
 
-  // Finance Dates (default to start and end of current month)
+  // Finance Dates (default to start and end of current month in DD/MM/AAAA)
   const [financeStartDate, setFinanceStartDate] = useState<string>(() => {
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    return firstDay.toISOString().split('T')[0];
+    return `${String(firstDay.getDate()).padStart(2, '0')}/${String(firstDay.getMonth() + 1).padStart(2, '0')}/${firstDay.getFullYear()}`;
   });
   const [financeEndDate, setFinanceEndDate] = useState<string>(() => {
     const now = new Date();
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    return lastDay.toISOString().split('T')[0];
+    return `${String(lastDay.getDate()).padStart(2, '0')}/${String(lastDay.getMonth() + 1).padStart(2, '0')}/${lastDay.getFullYear()}`;
   });
 
   // Fixed Costs Inputs
@@ -890,7 +896,7 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
       const dataToSave = {
         description: newVarCost.description,
         amount: amountVal,
-        date: newVarCost.date || new Date().toISOString().split('T')[0]
+        date: newVarCost.date || isoToBR(new Date().toISOString().split('T')[0])
       };
 
       if (isEditingVarCost) {
@@ -902,11 +908,46 @@ export default function Admin({ settings, setSettings, setIsAdmin }: {
         toast.success('Custo variável adicionado!');
       }
 
-      setNewVarCost({ description: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+      setNewVarCost({ description: '', amount: 0, date: isoToBR(new Date().toISOString().split('T')[0]) });
       setVarCostAmountInput('');
     } catch (err) {
       console.error('Erro ao salvar custo variável:', err);
       toast.error('Erro ao salvar custo variável.');
+    }
+  };
+
+  const handleSyncOrderPaymentStatus = async (order: Order) => {
+    if (!order?.id || isSyncingOrderPayment) return;
+    setIsSyncingOrderPayment(true);
+    try {
+      const pid = encodeURIComponent(order.asaasPaymentId || 'sync');
+      const oid = encodeURIComponent(order.id);
+      const resp = await fetch(`/api/asaas/payment-status/${pid}?orderId=${oid}`);
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data) {
+        toast.error(data?.error || 'Não foi possível consultar o pagamento agora.');
+        return;
+      }
+
+      const patch: Partial<Order> = {
+        paymentStatus: data.paymentStatus,
+        asaasPaidAmount: data.paidAmount,
+        asaasPaidPercent: data.paidPercent,
+        asaasPaidInstallments: data.paidInstallments,
+        asaasTotalInstallments: data.totalInstallments,
+        asaasIsPartial: data.isPartial,
+        asaasInstallments: data.installments,
+        asaasInvoiceUrl: data.invoiceUrl || order.asaasInvoiceUrl,
+        asaasBankSlipUrl: data.bankSlipUrl || order.asaasBankSlipUrl
+      };
+
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, ...patch } : o));
+      setSelectedOrderModal(prev => prev && prev.id === order.id ? { ...prev, ...patch } : prev);
+      toast.success('Status e parcelas atualizados!');
+    } catch {
+      toast.error('Erro de conexão ao atualizar status do pagamento.');
+    } finally {
+      setIsSyncingOrderPayment(false);
     }
   };
 
@@ -2880,29 +2921,32 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
     return count;
   }, [monthDays, orders, orderSearch]);
 
-  // Financial Preset Helpers
+  const formatLocalBR = (d: Date) =>
+    `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+
+  // Financial Preset Helpers (DD/MM/AAAA)
   const setPresetThisMonth = () => {
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    setFinanceStartDate(firstDay.toISOString().split('T')[0]);
-    setFinanceEndDate(lastDay.toISOString().split('T')[0]);
+    setFinanceStartDate(formatLocalBR(firstDay));
+    setFinanceEndDate(formatLocalBR(lastDay));
   };
 
   const setPresetLastMonth = () => {
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const lastDay = new Date(now.getFullYear(), now.getMonth(), 0);
-    setFinanceStartDate(firstDay.toISOString().split('T')[0]);
-    setFinanceEndDate(lastDay.toISOString().split('T')[0]);
+    setFinanceStartDate(formatLocalBR(firstDay));
+    setFinanceEndDate(formatLocalBR(lastDay));
   };
 
   const setPresetLast30Days = () => {
     const end = new Date();
     const start = new Date();
     start.setDate(end.getDate() - 29);
-    setFinanceStartDate(start.toISOString().split('T')[0]);
-    setFinanceEndDate(end.toISOString().split('T')[0]);
+    setFinanceStartDate(formatLocalBR(start));
+    setFinanceEndDate(formatLocalBR(end));
   };
 
   const setPresetAllTime = () => {
@@ -2912,39 +2956,27 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
 
   // Financial Calculations useMemo
   const { filteredFinanceOrders, totalRevenue, appliedFixed, totalVariable, netProfit, daysInPeriod, monthlyFixedSum } = useMemo(() => {
-    const start = financeStartDate ? new Date(financeStartDate + 'T00:00:00') : null;
-    const end = financeEndDate ? new Date(financeEndDate + 'T23:59:59') : null;
+    const start = parseFlexibleDate(financeStartDate, false);
+    const end = parseFlexibleDate(financeEndDate, true);
 
     const parseDateStr = (str: string, lang: string = 'pt') => {
       if (!str) return null;
-      if (str.includes('-')) {
-        const parts = str.split('-');
-        if (parts.length === 3) {
-          if (parts[0].length === 4) {
-            const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
-            d.setHours(0,0,0,0);
-            return d;
-          }
-        }
-      }
+      const flex = parseFlexibleDate(str, false);
+      if (flex) return flex;
       if (str.includes('/')) {
         const parts = str.split('/');
         if (parts.length === 3) {
-          if (lang === 'en') {
-            const d = new Date(parseInt(parts[2], 10), parseInt(parts[0], 10) - 1, parseInt(parts[1], 10));
-            d.setHours(0,0,0,0);
-            return d;
-          } else {
-            const d = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
-            d.setHours(0,0,0,0);
-            return d;
-          }
+          const d = lang === 'en'
+            ? new Date(parseInt(parts[2], 10), parseInt(parts[0], 10) - 1, parseInt(parts[1], 10))
+            : new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+          d.setHours(0, 0, 0, 0);
+          return d;
         }
       }
       const parsed = Date.parse(str);
       if (!isNaN(parsed)) {
         const d = new Date(parsed);
-        d.setHours(0,0,0,0);
+        d.setHours(0, 0, 0, 0);
         return d;
       }
       return null;
@@ -2953,8 +2985,9 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
     // 1. Filter Orders
     const filteredOrders = orders.filter(order => {
       let orderDate: Date | null = null;
-      if (order.pickupDate) {
-        orderDate = parseDateStr(order.pickupDate, order.orderLanguage || settings.language || 'pt');
+      const rawDate = order.scheduledDate || order.pickupDate;
+      if (rawDate) {
+        orderDate = parseDateStr(rawDate, order.orderLanguage || settings.language || 'pt');
       }
       if (!orderDate && order.createdAt?.toDate) {
         orderDate = order.createdAt.toDate();
@@ -2988,22 +3021,23 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
 
     // Calculate days difference
     let days = 30;
-    if (financeStartDate && financeEndDate) {
-      const s = new Date(financeStartDate + 'T00:00:00');
-      const e = new Date(financeEndDate + 'T00:00:00');
-      const diffTime = Math.abs(e.getTime() - s.getTime());
+    if (start && end) {
+      const s0 = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      const e0 = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+      const diffTime = Math.abs(e0.getTime() - s0.getTime());
       days = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
     }
 
     let appliedFix = monthlySum;
-    if (isProportionalFixed && financeStartDate && financeEndDate) {
+    if (isProportionalFixed && start && end) {
       appliedFix = (monthlySum / 30) * days;
     }
 
     // 3. Variable Costs
     const filteredVarCosts = variableCosts.filter(vc => {
       if (!vc.date) return false;
-      const vcDate = new Date(vc.date + 'T12:00:00');
+      const vcDate = parseFlexibleDate(vc.date, false);
+      if (!vcDate) return false;
       if (start && vcDate < start) return false;
       if (end && vcDate > end) return false;
       return true;
@@ -3786,22 +3820,26 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                 <div className="flex flex-col gap-2 bg-gray-50/90 p-4 rounded-2xl border border-gray-200 shadow-inner shrink-0">
                   <div className="text-[10px] font-black uppercase tracking-wider text-gray-600">Filtrar por Período</div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl px-3 py-1.5 shadow-xs">
+                    <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl px-2.5 py-1 shadow-xs">
                       <span className="text-[10px] font-bold text-gray-400 uppercase">De:</span>
-                      <input 
-                        type="date" 
-                        className="border-0 bg-transparent text-xs font-bold text-gray-800 outline-none cursor-pointer"
+                      <BRDatePicker
+                        compact
                         value={financeStartDate}
-                        onChange={e => setFinanceStartDate(e.target.value)}
+                        onChange={val => setFinanceStartDate(val)}
+                        placeholder="DD/MM/AAAA"
+                        primaryColor={settings.primaryColor || '#865d39'}
+                        className="border-0 p-0 shadow-none"
                       />
                     </div>
-                    <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl px-3 py-1.5 shadow-xs">
+                    <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl px-2.5 py-1 shadow-xs">
                       <span className="text-[10px] font-bold text-gray-400 uppercase">Até:</span>
-                      <input 
-                        type="date" 
-                        className="border-0 bg-transparent text-xs font-bold text-gray-800 outline-none cursor-pointer"
+                      <BRDatePicker
+                        compact
                         value={financeEndDate}
-                        onChange={e => setFinanceEndDate(e.target.value)}
+                        onChange={val => setFinanceEndDate(val)}
+                        placeholder="DD/MM/AAAA"
+                        primaryColor={settings.primaryColor || '#865d39'}
+                        className="border-0 p-0 shadow-none"
                       />
                     </div>
                   </div>
@@ -4199,17 +4237,22 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
               <>
                 {/* Metrics Dashboard Grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in">
-              {/* Revenue Card */}
-              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 shadow-sm relative overflow-hidden flex flex-col justify-between h-32">
-                <div className="absolute right-3 top-3 bg-emerald-500/10 text-emerald-700 p-2 rounded-xl">
+              {/* Revenue Card (Clicável - abre lista de pedidos do período) */}
+              <div
+                onClick={() => setShowRevenueModal(true)}
+                className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 shadow-sm relative overflow-hidden flex flex-col justify-between h-32 cursor-pointer hover:shadow-md hover:border-emerald-300 transition-all group"
+                title="Clique para visualizar os pedidos deste período"
+              >
+                <div className="absolute right-3 top-3 bg-emerald-500/10 text-emerald-700 p-2 rounded-xl group-hover:bg-emerald-500/20 transition-colors">
                   <DollarSign size={22} />
                 </div>
                 <div className="text-xs font-bold uppercase text-emerald-800/80 tracking-wider">Receita (Faturamento)</div>
                 <div className="text-2xl font-black text-emerald-950 mt-1">
                   {currencySymbol} {totalRevenue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
-                <div className="text-[10px] font-bold text-emerald-700/80 mt-1 uppercase">
-                  {filteredFinanceOrders.length} {filteredFinanceOrders.length === 1 ? 'Pedido no período' : 'Pedidos no período'}
+                <div className="text-[10px] font-bold text-emerald-700/80 mt-1 uppercase flex items-center justify-between gap-1">
+                  <span>{filteredFinanceOrders.length} {filteredFinanceOrders.length === 1 ? 'Pedido no período' : 'Pedidos no período'}</span>
+                  <span className="underline group-hover:text-emerald-900">Ver pedidos →</span>
                 </div>
               </div>
 
@@ -4506,12 +4549,12 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                       </div>
 
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold uppercase text-gray-500">Data do Gasto</label>
-                        <input 
-                          type="date" 
-                          className="w-full p-2.5 rounded-xl border border-gray-300 bg-white text-xs font-bold text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                        <label className="text-[10px] font-bold uppercase text-gray-500">Data do Gasto (DD/MM/AAAA)</label>
+                        <BRDatePicker
                           value={newVarCost.date || ''}
-                          onChange={e => setNewVarCost({...newVarCost, date: e.target.value})}
+                          onChange={val => setNewVarCost({ ...newVarCost, date: val })}
+                          placeholder="DD/MM/AAAA"
+                          primaryColor={settings.primaryColor || '#865d39'}
                         />
                       </div>
                     </div>
@@ -4529,7 +4572,7 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                           type="button"
                           onClick={() => {
                             setIsEditingVarCost(null);
-                            setNewVarCost({ description: '', amount: 0, date: new Date().toISOString().split('T')[0] });
+                            setNewVarCost({ description: '', amount: 0, date: isoToBR(new Date().toISOString().split('T')[0]) });
                             setVarCostAmountInput('');
                           }}
                           className="px-4 py-3 rounded-xl font-bold bg-gray-200 text-gray-700 hover:bg-gray-300 transition-all cursor-pointer text-xs"
@@ -4551,20 +4594,25 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                     {variableCosts
                       .filter(vc => {
                         if (!vc.date) return false;
-                        const vcDate = new Date(vc.date + 'T12:00:00');
-                        const start = financeStartDate ? new Date(financeStartDate + 'T00:00:00') : null;
-                        const end = financeEndDate ? new Date(financeEndDate + 'T23:59:59') : null;
+                        const vcDate = parseFlexibleDate(vc.date, false);
+                        const start = parseFlexibleDate(financeStartDate, false);
+                        const end = parseFlexibleDate(financeEndDate, true);
+                        if (!vcDate) return false;
                         if (start && vcDate < start) return false;
                         if (end && vcDate > end) return false;
                         return true;
                       })
-                      .sort((a,b) => b.date.localeCompare(a.date))
+                      .sort((a, b) => {
+                        const dA = parseFlexibleDate(a.date, false)?.getTime() || 0;
+                        const dB = parseFlexibleDate(b.date, false)?.getTime() || 0;
+                        return dB - dA;
+                      })
                       .map(vc => (
                         <div key={vc.id} className="bg-white/75 border border-gray-200 p-3 rounded-xl flex items-center justify-between group">
                           <div>
                             <div className="font-bold text-xs text-gray-800">{vc.description}</div>
                             <div className="text-[10px] text-gray-400 mt-0.5 font-semibold flex items-center gap-2">
-                              <span>{new Date(vc.date + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
+                              <span>{isoToBR(vc.date)}</span>
                               <span>•</span>
                               <span className="text-rose-600 font-bold">{currencySymbol} {vc.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                             </div>
@@ -4573,7 +4621,7 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                             <button 
                               onClick={() => {
                                 setIsEditingVarCost(vc);
-                                setNewVarCost(vc);
+                                setNewVarCost({ ...vc, date: isoToBR(vc.date) });
                                 setVarCostAmountInput(vc.amount.toString());
                                 scrollToTop();
                               }}
@@ -4595,9 +4643,10 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                     
                     {variableCosts.filter(vc => {
                       if (!vc.date) return false;
-                      const vcDate = new Date(vc.date + 'T12:00:00');
-                      const start = financeStartDate ? new Date(financeStartDate + 'T00:00:00') : null;
-                      const end = financeEndDate ? new Date(financeEndDate + 'T23:59:59') : null;
+                      const vcDate = parseFlexibleDate(vc.date, false);
+                      const start = parseFlexibleDate(financeStartDate, false);
+                      const end = parseFlexibleDate(financeEndDate, true);
+                      if (!vcDate) return false;
                       if (start && vcDate < start) return false;
                       if (end && vcDate > end) return false;
                       return true;
@@ -4612,6 +4661,91 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
             </div>
           </>
         )}
+
+            {/* Modal: Pedidos da Receita no Período */}
+            {showRevenueModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
+                <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col border border-gray-200">
+                  <div className="p-5 border-b border-gray-100 flex items-center justify-between bg-emerald-50/70">
+                    <div>
+                      <h3 className="font-serif font-black text-lg text-emerald-950 flex items-center gap-2">
+                        <DollarSign size={20} className="text-emerald-700" />
+                        <span>Pedidos do Período</span>
+                      </h3>
+                      <p className="text-xs font-semibold text-emerald-800/80 mt-0.5">
+                        {financeStartDate || financeEndDate
+                          ? `${financeStartDate || 'Início'} até ${financeEndDate || 'Hoje'}`
+                          : 'Todo o histórico'} • {filteredFinanceOrders.length} {filteredFinanceOrders.length === 1 ? 'pedido' : 'pedidos'} • Total: {currencySymbol} {totalRevenue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowRevenueModal(false)}
+                      className="p-2 rounded-xl bg-white hover:bg-gray-100 text-gray-700 transition-all cursor-pointer border border-gray-200"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+
+                  <div className="p-5 overflow-y-auto space-y-2.5 flex-grow">
+                    {filteredFinanceOrders.length === 0 ? (
+                      <div className="text-center py-12 text-sm text-gray-400 font-medium">
+                        Nenhum pedido encontrado no período selecionado.
+                      </div>
+                    ) : (
+                      filteredFinanceOrders.map(ord => {
+                        const sched = getOrderScheduledInfo(ord);
+                        return (
+                          <div
+                            key={ord.id}
+                            onClick={() => {
+                              setShowRevenueModal(false);
+                              setSelectedOrderModal(ord);
+                            }}
+                            className="p-3.5 rounded-2xl border border-gray-200 hover:border-emerald-400 hover:bg-emerald-50/30 transition-all cursor-pointer flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-sm text-gray-900 truncate">
+                                  {ord.isB2B || ord.isPJ ? (ord.b2bCompanyName || ord.customerName) : ord.customerName}
+                                </span>
+                                <span className={cn(
+                                  "text-[10px] font-bold px-2 py-0.5 rounded-md whitespace-nowrap",
+                                  ord.paymentStatus === 'full'
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : ord.paymentStatus === 'half'
+                                      ? "bg-amber-100 text-amber-800"
+                                      : ord.asaasIsPartial && (ord.asaasPaidPercent || 0) > 0
+                                        ? "bg-orange-100 text-orange-800"
+                                        : "bg-red-100 text-red-800"
+                                )}>
+                                  {ord.paymentStatus === 'full'
+                                    ? '🟢 Pago'
+                                    : ord.paymentStatus === 'half'
+                                      ? '🟡 50%'
+                                      : ord.asaasIsPartial && (ord.asaasPaidPercent || 0) > 0
+                                        ? `🟠 ${Math.round(ord.asaasPaidPercent || 0)}%`
+                                        : '🔴 Pendente'}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-500 truncate">
+                                {sched.dateDisplay || formatOrderFullDate(ord.createdAt)} • {ord.items?.map(i => `${i.quantity}x ${i.title}`).join(', ')}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <div className="font-black text-sm text-emerald-800 whitespace-nowrap">
+                                {currencySymbol} {Number(ord.total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </div>
+                              <span className="text-[10px] text-gray-400 font-semibold">Ver detalhes →</span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -8239,23 +8373,27 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                                   {order.items?.map(it => `${it.quantity}x ${it.title}`).join(', ')}
                                 </div>
 
-                                <div className="flex items-center justify-between pt-1.5 border-t border-gray-100 text-[11px]">
-                                  <div>
+                                <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-gray-100 text-[10px]">
+                                  <div className="shrink-0">
                                     {order.paymentStatus === 'full' ? (
-                                      <span className="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md">
+                                      <span className="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
                                         🟢 Pago
                                       </span>
                                     ) : order.paymentStatus === 'half' ? (
-                                      <span className="font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                                      <span className="font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
                                         🟡 50%
                                       </span>
+                                    ) : order.asaasIsPartial && typeof order.asaasPaidPercent === 'number' && order.asaasPaidPercent > 0 ? (
+                                      <span className="font-bold text-orange-800 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
+                                        🟠 {Math.round(order.asaasPaidPercent)}%
+                                      </span>
                                     ) : (
-                                      <span className="font-bold text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-md">
+                                      <span className="font-bold text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
                                         🔴 Pendente
                                       </span>
                                     )}
                                   </div>
-                                  <span className="font-extrabold text-sm text-gray-900">
+                                  <span className="font-extrabold text-xs text-gray-900 whitespace-nowrap">
                                     {currencySymbol} {order.total.toFixed(2).replace('.', ',')}
                                   </span>
                                 </div>
@@ -8352,39 +8490,23 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
             {orderViewMode === 'list' && (
               <div className="space-y-6">
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="relative">
-                    <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-black/60" size={18} />
-                    <input 
-                      type="text" 
-                      placeholder="DD/MM/AAAA"
-                      className="pl-10 p-2 rounded-xl border-2 border-white bg-white/70 text-black font-semibold text-sm w-32 placeholder-black/50 focus:outline-none focus:ring-2 focus:ring-white"
-                      value={startDate}
-                      onChange={e => {
-                        let val = e.target.value.replace(/\D/g, '');
-                        if (val.length > 8) val = val.slice(0, 8);
-                        if (val.length > 4) val = val.slice(0, 2) + '/' + val.slice(2, 4) + '/' + val.slice(4);
-                        else if (val.length > 2) val = val.slice(0, 2) + '/' + val.slice(2);
-                        setStartDate(val);
-                      }}
-                    />
-                  </div>
+                  <BRDatePicker
+                    compact
+                    value={startDate}
+                    onChange={val => setStartDate(val)}
+                    placeholder="DD/MM/AAAA"
+                    primaryColor={settings.primaryColor || '#865d39'}
+                    className="border-2 border-white bg-white/85 rounded-xl px-3 py-1.5"
+                  />
                   <span className="text-white font-semibold drop-shadow-sm">até</span>
-                  <div className="relative">
-                    <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-black/60" size={18} />
-                    <input 
-                      type="text" 
-                      placeholder="DD/MM/AAAA"
-                      className="pl-10 p-2 rounded-xl border-2 border-white bg-white/70 text-black font-semibold text-sm w-32 placeholder-black/50 focus:outline-none focus:ring-2 focus:ring-white"
-                      value={endDate}
-                      onChange={e => {
-                        let val = e.target.value.replace(/\D/g, '');
-                        if (val.length > 8) val = val.slice(0, 8);
-                        if (val.length > 4) val = val.slice(0, 2) + '/' + val.slice(2, 4) + '/' + val.slice(4);
-                        else if (val.length > 2) val = val.slice(0, 2) + '/' + val.slice(2);
-                        setEndDate(val);
-                      }}
-                    />
-                  </div>
+                  <BRDatePicker
+                    compact
+                    value={endDate}
+                    onChange={val => setEndDate(val)}
+                    placeholder="DD/MM/AAAA"
+                    primaryColor={settings.primaryColor || '#865d39'}
+                    className="border-2 border-white bg-white/85 rounded-xl px-3 py-1.5"
+                  />
                   <button 
                     onClick={() => {
                       setShowBatchSummary(false);
@@ -8522,7 +8644,7 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                         >
                           <MessageCircle size={14} className="text-green-600" /> {order.phone}
                         </a>
-                        <span className="flex items-center gap-1"><Calendar size={14} /> Criado em: {order.createdAt?.toDate ? order.createdAt.toDate().toLocaleString('en-US') : 'N/A'}</span>
+                        <span className="flex items-center gap-1"><Calendar size={14} /> Criado em: {order.createdAt?.toDate ? order.createdAt.toDate().toLocaleString('pt-BR') : 'N/A'}</span>
                         {order.pickupDate && (
                           <span 
                             className="flex items-center gap-1.5 font-black px-3 py-1 rounded-xl shadow-sm text-xs"
@@ -8536,6 +8658,23 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                         )}
                       </div>
                       <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 mt-2">
+                        {order.paymentStatus === 'full' ? (
+                          <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
+                            🟢 Pago
+                          </span>
+                        ) : order.paymentStatus === 'half' ? (
+                          <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
+                            🟡 50%
+                          </span>
+                        ) : order.asaasIsPartial && typeof order.asaasPaidPercent === 'number' && order.asaasPaidPercent > 0 ? (
+                          <span className="text-xs font-bold text-orange-800 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
+                            🟠 {Math.round(order.asaasPaidPercent)}%
+                          </span>
+                        ) : (
+                          <span className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1 whitespace-nowrap">
+                            🔴 Pendente
+                          </span>
+                        )}
                         <span className="text-xs font-bold text-gray-500 mr-1 uppercase">Sinalizar Pagamento:</span>
                         <button
                           onClick={() => updateOrderPaymentStatus(order.id, 'pending')}
@@ -9114,6 +9253,136 @@ TOTAL: ${currencySymbol} ${orderTotalStr}
                     </div>
                   </div>
                 </div>
+
+                {/* Painel Detalhado do Pagamento Online / Parcelas */}
+                {(selectedOrderModal.cpfCnpj || selectedOrderModal.paymentMethod || selectedOrderModal.asaasPaymentId || (selectedOrderModal.asaasInstallments && selectedOrderModal.asaasInstallments.length > 0)) && (() => {
+                  const safeInvoiceUrl = sanitizeSafePaymentUrl(selectedOrderModal.asaasInvoiceUrl || selectedOrderModal.asaasBankSlipUrl);
+                  const paidAmt = Number(selectedOrderModal.asaasPaidAmount || 0);
+                  const paidPct = Number(selectedOrderModal.asaasPaidPercent || 0);
+                  const chargeModeLabel = (selectedOrderModal.asaasChargeMode || selectedOrderModal.paymentChargeMode) === 'half'
+                    ? 'Sinal 50%'
+                    : 'Integral (100%)';
+                  const methodLabel =
+                    selectedOrderModal.paymentMethod === 'pix'
+                      ? 'Pix'
+                      : selectedOrderModal.paymentMethod === 'credit'
+                        ? `Cartão de Crédito (${selectedOrderModal.asaasInstallmentsCount || selectedOrderModal.paymentInstallments || 1}x)`
+                        : selectedOrderModal.paymentMethod === 'debit'
+                          ? 'Cartão de Débito'
+                          : selectedOrderModal.paymentMethod === 'boleto'
+                            ? 'Boleto Bancário'
+                            : (selectedOrderModal.paymentMethod || 'Não informado');
+
+                  return (
+                    <div className="p-4 rounded-2xl bg-gray-50 border border-gray-200/90 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-2.5">
+                        <h4 className="font-serif font-bold text-sm text-gray-900 flex items-center gap-2">
+                          <CreditCard size={16} className="text-amber-800" />
+                          <span>Pagamento Online & Parcelas</span>
+                        </h4>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          {(selectedOrderModal.asaasPaymentId || selectedOrderModal.id) && (
+                            <button
+                              type="button"
+                              disabled={isSyncingOrderPayment}
+                              onClick={() => handleSyncOrderPaymentStatus(selectedOrderModal)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-900 hover:bg-black text-white rounded-lg text-xs font-bold cursor-pointer transition-all disabled:opacity-60"
+                            >
+                              <RefreshCw size={12} className={isSyncingOrderPayment ? 'animate-spin' : ''} />
+                              <span>{isSyncingOrderPayment ? 'Atualizando...' : 'Atualizar Status e Parcelas'}</span>
+                            </button>
+                          )}
+                          {safeInvoiceUrl && (
+                            <a
+                              href={safeInvoiceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 rounded-lg text-xs font-bold transition-all"
+                            >
+                              <ExternalLink size={12} />
+                              <span>Abrir Fatura / Comprovante</span>
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                        <div className="p-2.5 bg-white rounded-xl border border-gray-200">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 block">CPF / CNPJ</span>
+                          <span className="font-bold text-gray-900">
+                            {selectedOrderModal.cpfCnpj ? formatCpfCnpj(selectedOrderModal.cpfCnpj) : 'Não informado'}
+                          </span>
+                        </div>
+                        <div className="p-2.5 bg-white rounded-xl border border-gray-200">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 block">Meio de Pagamento</span>
+                          <span className="font-bold text-gray-900">{methodLabel}</span>
+                        </div>
+                        <div className="p-2.5 bg-white rounded-xl border border-gray-200">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 block">Modalidade</span>
+                          <span className="font-bold text-gray-900">{chargeModeLabel}</span>
+                        </div>
+                        <div className="p-2.5 bg-white rounded-xl border border-gray-200">
+                          <span className="text-[10px] font-bold uppercase text-gray-400 block">Valor Pago Confirmado</span>
+                          <span className="font-black text-emerald-700">
+                            {currencySymbol} {paidAmt.toFixed(2).replace('.', ',')} ({paidPct}%)
+                          </span>
+                        </div>
+                      </div>
+
+                      {selectedOrderModal.asaasIsPartial && (
+                        <div className="p-3 rounded-xl bg-orange-50 border border-orange-300 text-orange-950 text-xs font-bold flex items-start gap-2">
+                          <AlertTriangle size={16} className="text-orange-600 shrink-0 mt-0.5" />
+                          <span>
+                            Pagamento parcial detectado ({currencySymbol} {paidAmt.toFixed(2).replace('.', ',')} = {paidPct}% do pedido). Como não atingiu 50%, o status permanece como Pendente.
+                          </span>
+                        </div>
+                      )}
+
+                      {selectedOrderModal.asaasInstallments && selectedOrderModal.asaasInstallments.length > 0 && (
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] font-extrabold uppercase text-gray-500 block">
+                            Detalhamento das Parcelas ({selectedOrderModal.asaasPaidInstallments || 0}/{selectedOrderModal.asaasTotalInstallments || selectedOrderModal.asaasInstallments.length} pagas)
+                          </span>
+                          <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+                            {selectedOrderModal.asaasInstallments.map((inst) => (
+                              <div key={inst.id} className="p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                                <div className="flex items-center gap-2.5">
+                                  <span className="px-2 py-0.5 rounded-md bg-gray-100 text-gray-800 font-black">
+                                    {inst.number}ª parcela
+                                  </span>
+                                  <span className="text-gray-600 font-semibold">
+                                    Venc.: {isoToBR(inst.dueDate)}
+                                  </span>
+                                  {inst.confirmedDate && (
+                                    <span className="text-emerald-700 font-semibold">
+                                      Conf.: {isoToBR(inst.confirmedDate)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className={cn(
+                                    "px-2 py-0.5 rounded-md text-[11px] font-bold whitespace-nowrap",
+                                    ['CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].includes(inst.status)
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : inst.status === 'OVERDUE'
+                                        ? "bg-red-100 text-red-800"
+                                        : "bg-amber-100 text-amber-800"
+                                  )}>
+                                    {inst.statusLabelPt}
+                                  </span>
+                                  <span className="font-extrabold text-gray-900 whitespace-nowrap">
+                                    {currencySymbol} {Number(inst.value || 0).toFixed(2).replace('.', ',')}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Modal Footer Actions */}

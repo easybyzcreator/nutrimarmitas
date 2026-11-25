@@ -172,6 +172,39 @@ export interface Order {
   paymentStatus?: 'pending' | 'half' | 'full';
   neighborhood?: string;
   deliveryFee?: number;
+  cpfCnpj?: string;
+  paymentMethod?: 'pix' | 'credit' | 'debit' | 'boleto' | string;
+  paymentChargeMode?: 'half' | 'full';
+  paymentInstallments?: number;
+  asaasCustomerId?: string;
+  asaasPaymentId?: string;
+  asaasInstallmentId?: string;
+  asaasBillingType?: string;
+  asaasChargeMode?: 'half' | 'full';
+  asaasInstallmentsCount?: number;
+  asaasChargeAmount?: number;
+  asaasPaidAmount?: number;
+  asaasPaidPercent?: number;
+  asaasPaidInstallments?: number;
+  asaasTotalInstallments?: number;
+  asaasIsPartial?: boolean;
+  asaasInvoiceUrl?: string;
+  asaasBankSlipUrl?: string;
+  asaasPixPayload?: string;
+  asaasPixQrCode?: string;
+  asaasBoletoLine?: string;
+  asaasInstallments?: {
+    id: string;
+    number: number;
+    dueDate: string;
+    value: number;
+    status: string;
+    statusLabelPt: string;
+    paymentDate?: string;
+    confirmedDate?: string;
+    invoiceUrl?: string;
+    bankSlipUrl?: string;
+  }[];
 }
 
 export interface DeliveryNeighborhood {
